@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Mosaic",
+  "version": "0.1.0",
+  "identifier": "fyi.uli.mosaic",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Mosaic — Lokales Bildstudio",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 820,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "GraphicsAndDesign",
+    "shortDescription": "Lokales KI-Bildstudio",
+    "longDescription": "Lokales Bildstudio mit integrierter Bildgenerierung.",
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": [
+          "German",
+          "English"
+        ]
+      }
+    },
+    "resources": [
+      "engine/*"
+    ]
+  }
+}
