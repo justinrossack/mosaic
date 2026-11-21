@@ -22,9 +22,11 @@ fn folder(app: &tauri::AppHandle, name: &str) -> Result<PathBuf> {
 }
 
 /// Rollen entsprechen den Komponenten-Optionen von sd-cli.
-const ROLES: [(&str, &str); 7] = [
+const ROLES: [(&str, &str); 9] = [
     ("checkpoint", "-m"),
     ("diffusion", "--diffusion-model"),
+    ("high_noise", "--high-noise-diffusion-model"),
+    ("clip_vision", "--clip_vision"),
     ("vae", "--vae"),
     ("clip_l", "--clip_l"),
     ("clip_g", "--clip_g"),
@@ -295,8 +297,20 @@ async fn download(app: tauri::AppHandle, source: String, role: String, family: S
     upsert(&app, new_entry(&dest, &short, &role, &family, true))
 }
 
+fn default_strength() -> f32 {
+    0.75
+}
+fn default_frames() -> u32 {
+    33
+}
+fn default_fps() -> u32 {
+    24
+}
+
 #[derive(Deserialize)]
 struct GenerateRequest {
+    #[serde(default)]
+    mode: String,
     model: String,
     components: HashMap<String, String>,
     prompt: String,
@@ -308,7 +322,37 @@ struct GenerateRequest {
     seed: i64,
     sampler: String,
     offload: bool,
+    /// Vorlage als Ausgangsbild (img2img) bzw. Startbild eines Videos.
+    #[serde(default)]
+    init_image: Option<String>,
+    #[serde(default = "default_strength")]
+    strength: f32,
+    /// Vorlagen als Referenzbilder (z. B. FLUX.3 Klein, Qwen Image Edit).
+    #[serde(default)]
+    refs: Vec<String>,
+    /// Personen aus der Gesichter-Datenbank, deren Fotos als Referenz dienen.
+    #[serde(default)]
+    faces: Vec<String>,
+    #[serde(default = "default_frames")]
+    frames: u32,
+    #[serde(default = "default_fps")]
+    fps: u32,
+    #[serde(default)]
+    flow_shift: f32,
 }
+
+/// Liefert einen Pfad nur, wenn er innerhalb der Mosaic-Daten liegt.
+fn inside_data(app: &tauri::AppHandle, path: &str) -> Result<PathBuf> {
+    let base = folder(app, "")?.canonicalize().map_err(error)?;
+    let path = Path::new(path).canonicalize().map_err(|_| "Datei nicht gefunden.".to_string())?;
+    if !path.starts_with(&base) {
+        return Err("Ungültiger Dateipfad.".into());
+    }
+    Ok(path)
+}
+
+const IMAGE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
+const MAX_REFS: usize = 10;
 
 #[tauri::command]
 async fn generate(app: tauri::AppHandle, device: String, request: GenerateRequest) -> Result<String> {
@@ -316,12 +360,23 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
         return Err("Bitte das Profil für dieses Betriebssystem auswählen.".into());
     }
     let r = request;
+    let video = match r.mode.as_str() {
+        "" | "image" => false,
+        "video" => true,
+        _ => return Err("Unbekannter Modus.".into()),
+    };
     if r.prompt.trim().is_empty() || r.prompt.len() > 8000 || r.negative.len() > 8000 {
         return Err("Bitte einen Prompt mit höchstens 8000 Bytes eingeben.".into());
     }
-    let sizes_ok = |v: u32| (256..=2048).contains(&v) && v % 64 == 0;
+    let sizes_ok = |v: u32| (256..=2048).contains(&v) && v % 16 == 0;
     if !sizes_ok(r.width) || !sizes_ok(r.height) || !(1..=150).contains(&r.steps) || !(0.0..=30.0).contains(&r.cfg) {
         return Err("Ungültige Einstellungen für Größe, Schritte oder CFG.".into());
+    }
+    if !(0.0..=1.0).contains(&r.strength) || !(0.0..=20.0).contains(&r.flow_shift) {
+        return Err("Ungültige Stärke oder Flow-Shift.".into());
+    }
+    if video && (!(5..=241).contains(&r.frames) || r.frames % 4 != 1 || !(1..=60).contains(&r.fps)) {
+        return Err("Ungültige Videolänge oder Bildrate.".into());
     }
     if !["euler", "euler_a", "dpm++2m", "dpm++2s_a", "lcm"].contains(&r.sampler.as_str()) {
         return Err("Unbekanntes Sampling-Verfahren.".into());
@@ -335,6 +390,9 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
         Ok(entry)
     };
     let mut args: Vec<String> = Vec::new();
+    if video {
+        args.extend(["-M".into(), "vid_gen".into()]);
+    }
     let main = find(&r.model)?;
     let flag = |role: &str| ROLES.iter().find(|(name, _)| *name == role).map(|(_, f)| *f);
     match main.role.as_str() {
@@ -353,11 +411,45 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
         args.push(option.into());
         args.push(entry.path.clone());
     }
+    if let Some(init) = r.init_image.as_deref().filter(|p| !p.is_empty()) {
+        args.push("-i".into());
+        args.push(inside_data(&app, init)?.to_string_lossy().into_owned());
+        if !video {
+            args.extend(["--strength".into(), r.strength.to_string()]);
+        }
+    }
+    let mut refs: Vec<PathBuf> = Vec::new();
+    for path in &r.refs {
+        refs.push(inside_data(&app, path)?);
+    }
+    if !r.faces.is_empty() {
+        let faces = load_faces(&app)?;
+        let dir = folder(&app, "faces")?;
+        for id in &r.faces {
+            let face = faces.iter().find(|f| &f.id == id).ok_or("Person nicht gefunden.")?;
+            if face.images.is_empty() {
+                return Err(format!("Für „{}“ gibt es noch keine Fotos.", face.name));
+            }
+            // Bis zu drei Fotos pro Person reichen für die Identität.
+            refs.extend(face.images.iter().take(3).map(|img| dir.join(img)));
+        }
+    }
+    if refs.len() > MAX_REFS {
+        return Err(format!("Höchstens {MAX_REFS} Referenzbilder (Vorlage + Gesichtsfotos) gleichzeitig."));
+    }
+    for path in &refs {
+        args.push("-r".into());
+        args.push(path.to_string_lossy().into_owned());
+    }
     let id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(error)?
         .as_nanos();
-    let out = folder(&app, "images")?.join(format!("mosaic-{id}.png"));
+    let out = if video {
+        folder(&app, "videos")?.join(format!("mosaic-{id}.webm"))
+    } else {
+        folder(&app, "images")?.join(format!("mosaic-{id}.png"))
+    };
     args.extend([
         "-p".into(), r.prompt.clone(),
         "-W".into(), r.width.to_string(),
@@ -367,12 +459,22 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
         "--sampling-method".into(), r.sampler.clone(),
         "-s".into(), r.seed.to_string(),
     ]);
+    if video {
+        args.extend(["--video-frames".into(), r.frames.to_string(), "--fps".into(), r.fps.to_string()]);
+    }
+    if r.flow_shift > 0.0 {
+        args.extend(["--flow-shift".into(), r.flow_shift.to_string()]);
+    }
     if !r.negative.trim().is_empty() {
         args.extend(["-n".into(), r.negative.clone()]);
     }
     if r.offload {
         args.push("--offload-to-cpu".into());
     }
+    run_engine(&app, args, out).await
+}
+
+async fn run_engine(app: &tauri::AppHandle, args: Vec<String>, out: PathBuf) -> Result<String> {
     let exe = app
         .path()
         .resource_dir()
@@ -416,22 +518,153 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
     result.map_err(error)?
 }
 
+/// Liefert Bilder und Videos aus den Mosaic-Daten an die Oberfläche.
 #[tauri::command]
-async fn preview(app: tauri::AppHandle, name: String) -> Result<tauri::ipc::Response> {
-    let path = Path::new(&name);
-    if path.parent() != Some(folder(&app, "images")?.as_path())
-        || path.extension().and_then(|v| v.to_str()) != Some("png")
-    {
-        return Err("Ungültiger Bildpfad.".into());
+async fn media(app: tauri::AppHandle, path: String) -> Result<tauri::ipc::Response> {
+    let path = inside_data(&app, &path)?;
+    let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) && ext != "webm" {
+        return Err("Ungültiger Dateityp.".into());
     }
     Ok(tauri::ipc::Response::new(fs::read(path).map_err(error)?))
+}
+
+// ---------- Vorlagen und Gesichter ----------
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Face {
+    id: String,
+    name: String,
+    images: Vec<String>,
+}
+
+fn faces_file(app: &tauri::AppHandle) -> Result<PathBuf> {
+    Ok(folder(app, "faces")?.join("faces.json"))
+}
+fn load_faces(app: &tauri::AppHandle) -> Result<Vec<Face>> {
+    match fs::read_to_string(faces_file(app)?) {
+        Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+fn save_faces(app: &tauri::AppHandle, faces: &[Face]) -> Result<()> {
+    let file = faces_file(app)?;
+    let tmp = file.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(faces).map_err(error)?).map_err(error)?;
+    fs::rename(tmp, file).map_err(error)
+}
+fn unique_id() -> Result<String> {
+    Ok(format!("{:x}", SystemTime::now().duration_since(UNIX_EPOCH).map_err(error)?.as_nanos()))
+}
+
+#[tauri::command]
+fn faces(app: tauri::AppHandle) -> Result<Vec<Face>> {
+    load_faces(&app)
+}
+
+/// Ordner der Gesichtsfotos (mit abschließendem Trennzeichen) für die Vorschaubilder.
+#[tauri::command]
+fn faces_dir(app: tauri::AppHandle) -> Result<String> {
+    let mut path = folder(&app, "faces")?.to_string_lossy().into_owned();
+    path.push(std::path::MAIN_SEPARATOR);
+    Ok(path)
+}
+
+#[tauri::command]
+fn face_create(app: tauri::AppHandle, name: String) -> Result<Face> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err("Bitte einen Namen mit höchstens 60 Zeichen eingeben.".into());
+    }
+    let mut faces = load_faces(&app)?;
+    let face = Face { id: unique_id()?, name: name.to_string(), images: Vec::new() };
+    faces.push(face.clone());
+    save_faces(&app, &faces)?;
+    Ok(face)
+}
+
+#[tauri::command]
+fn face_delete(app: tauri::AppHandle, id: String) -> Result<()> {
+    let mut faces = load_faces(&app)?;
+    let dir = folder(&app, "faces")?;
+    if let Some(face) = faces.iter().find(|f| f.id == id) {
+        for img in &face.images {
+            let _ = fs::remove_file(dir.join(img));
+        }
+    }
+    faces.retain(|f| f.id != id);
+    save_faces(&app, &faces)
+}
+
+#[tauri::command]
+fn face_remove_image(app: tauri::AppHandle, id: String, image: String) -> Result<()> {
+    let mut faces = load_faces(&app)?;
+    let face = faces.iter_mut().find(|f| f.id == id).ok_or("Person nicht gefunden.")?;
+    if face.images.contains(&image) {
+        let _ = fs::remove_file(folder(&app, "faces")?.join(&image));
+        face.images.retain(|i| i != &image);
+    }
+    save_faces(&app, &faces)
+}
+
+/// Speichert ein hochgeladenes Bild (Rohdaten) als Vorlage oder als Foto einer Person.
+#[tauri::command]
+fn upload(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Ungültige Bilddaten.".into());
+    };
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let ext = header("x-ext").to_ascii_lowercase();
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        return Err("Bitte ein PNG-, JPG- oder WebP-Bild wählen.".into());
+    }
+    if bytes.len() < 16 || bytes.len() > 40 * 1024 * 1024 {
+        return Err("Das Bild ist leer oder größer als 40 MB.".into());
+    }
+    let id = unique_id()?;
+    match header("x-kind").as_str() {
+        "template" => {
+            let path = folder(&app, "templates")?.join(format!("vorlage-{id}.{ext}"));
+            fs::write(&path, bytes).map_err(error)?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+        "face" => {
+            let face_id = header("x-face");
+            let mut faces = load_faces(&app)?;
+            let face = faces.iter_mut().find(|f| f.id == face_id).ok_or("Person nicht gefunden.")?;
+            if face.images.len() >= 20 {
+                return Err("Höchstens 20 Fotos pro Person.".into());
+            }
+            let file = format!("{face_id}-{id}.{ext}");
+            let path = folder(&app, "faces")?.join(&file);
+            fs::write(&path, bytes).map_err(error)?;
+            face.images.push(file);
+            save_faces(&app, &faces)?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+        _ => Err("Unbekannter Upload.".into()),
+    }
+}
+
+/// Kopiert ein per Drag & Drop abgelegtes Bild als Vorlage in die Mosaic-Daten.
+#[tauri::command]
+fn import_template(app: tauri::AppHandle, path: String) -> Result<String> {
+    let src = PathBuf::from(path);
+    let ext = src.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) || !src.is_file() {
+        return Err("Bitte ein PNG-, JPG- oder WebP-Bild ablegen.".into());
+    }
+    let dest = folder(&app, "templates")?.join(format!("vorlage-{}.{ext}", unique_id()?));
+    fs::copy(&src, &dest).map_err(error)?;
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(false))
         .invoke_handler(tauri::generate_handler![
-            profile, library, import_file, update_entry, remove_entry, download, generate, preview
+            profile, library, import_file, update_entry, remove_entry, download, generate, media,
+            faces, faces_dir, face_create, face_delete, face_remove_image, upload, import_template
         ])
         .run(tauri::generate_context!())
         .expect("Mosaic konnte nicht starten");

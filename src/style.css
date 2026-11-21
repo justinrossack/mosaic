@@ -34,3 +34,32 @@ figcaption {font-size:12px;margin-top:8px}
 #status {position:sticky;bottom:0;background:#12151cee;padding:10px 0;margin:0;font-size:13px}
 [hidden] {display:none!important}
 @media (max-width:620px){.entry{grid-template-columns:1fr 1fr}.entry .name{grid-column:1/-1}}
+.tabs {display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid #2a2f3c}
+.tab {background:none;color:#9aa3b2;border:none;border-bottom:2px solid transparent;border-radius:0;padding:8px 14px;font-weight:600}
+.tab[aria-selected="true"] {color:#f5f2ef;border-bottom-color:#ff986f}
+.block {display:grid;gap:8px}
+.block-head {display:flex;justify-content:space-between;gap:12px;align-items:baseline;color:#cfd3dc;font-size:13px}
+.hint-inline {color:#8a93a3;font-size:12px}
+.template {border:1px dashed #424758;border-radius:10px;padding:12px;transition:border-color .15s}
+.template.dragging {border-color:#ff986f}
+.template-empty {color:#9aa3b2;font-size:13px;text-align:center;padding:14px 0}
+#template-filled {display:flex;align-items:center;gap:12px}
+#template-img {max-height:120px;max-width:200px;border-radius:8px}
+.link {display:inline;color:#ff986f;cursor:pointer;text-decoration:underline}
+.face-picker {display:flex;flex-wrap:wrap;gap:8px}
+.chip {display:inline-flex;align-items:center;gap:6px;border:1px solid #424758;border-radius:99px;padding:5px 12px;cursor:pointer}
+.chip:has(input:checked) {border-color:#ff986f;background:#2a1f1c}
+.inline-form {display:flex;gap:10px;margin-bottom:12px}
+.inline-form input {flex:1}
+.person {border-top:1px solid #262b36;padding:12px 0}
+.person-head {display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.person-head strong {font-size:14px}
+.person-head .button-like {margin-left:auto}
+.button-like {display:inline-block;font-weight:650;border:1px solid #424758;border-radius:8px;padding:7px 11px;cursor:pointer;font-size:13px}
+.button-like.secondary {background:#262c39;color:#f5f2ef}
+.thumbs {display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.thumb {position:relative}
+.thumb img {width:72px;height:72px;object-fit:cover;border-radius:8px}
+.thumb button {position:absolute;top:2px;right:2px;background:#12151ccc;padding:2px 6px;font-size:11px}
+video {display:block;max-width:100%;border-radius:12px}
+body[data-mode="image"] .video-only, body[data-mode="video"] .image-only {display:none}
