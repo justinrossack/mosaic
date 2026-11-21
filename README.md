@@ -36,5 +36,5 @@ Node 22, Rust, CMake, Git, Python 3 und die nativen Tauri-Buildwerkzeuge install
 
 Ein Versions-Tag startet den Workflow `.github/workflows/release.yml`. Er baut den Windows-Installer und das macOS-Disk-Image auf nativen Runnern und legt beide im selben GitHub-Release ab:
 
-    git tag v0.2.0
-    git push origin v0.2.0
+    git tag v0.2.1
+    git push origin v0.2.1
