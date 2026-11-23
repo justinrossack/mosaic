@@ -22,7 +22,7 @@ fn folder(app: &tauri::AppHandle, name: &str) -> Result<PathBuf> {
 }
 
 /// Rollen entsprechen den Komponenten-Optionen von sd-cli.
-const ROLES: [(&str, &str); 9] = [
+const ROLES: [(&str, &str); 10] = [
     ("checkpoint", "-m"),
     ("diffusion", "--diffusion-model"),
     ("high_noise", "--high-noise-diffusion-model"),
@@ -32,6 +32,7 @@ const ROLES: [(&str, &str); 9] = [
     ("clip_g", "--clip_g"),
     ("t5xxl", "--t5xxl"),
     ("llm", "--llm"),
+    ("llm_vision", "--llm_vision"),
 ];
 const EXTENSIONS: [&str; 4] = ["safetensors", "gguf", "ckpt", "sft"];
 

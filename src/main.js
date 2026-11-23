@@ -9,7 +9,13 @@ const FAMILIES = {
   sd: { label: "SD 1.5 / SDXL (Checkpoint)", kind: "image", refs: false, parts: ["vae"], required: [], steps: 25, cfg: 7, size: 512, sampler: "euler_a", negative: true, offload: false },
   flux1: { label: "FLUX.1", kind: "image", refs: false, parts: ["vae", "clip_l", "t5xxl"], required: ["vae", "clip_l", "t5xxl"], steps: 4, cfg: 1, size: 768, sampler: "euler", negative: false, offload: true },
   flux3: { label: "FLUX.3 Klein", kind: "image", refs: true, parts: ["vae", "llm"], required: ["vae", "llm"], steps: 16, cfg: 1, size: 768, sampler: "euler", negative: false, offload: true },
-  other: { label: "Anderes Bildmodell (eigene Komponenten)", kind: "image", refs: true, parts: ["vae", "clip_l", "clip_g", "t5xxl", "llm"], required: [], steps: 20, cfg: 4, size: 768, sampler: "euler", negative: true, offload: true },
+  sdturbo: { label: "SD/SDXL Turbo (Checkpoint)", kind: "image", refs: false, parts: ["vae"], required: [], steps: 4, cfg: 1, size: 512, sampler: "euler_a", negative: false, offload: false },
+  sd3: { label: "SD 3.5 (Checkpoint)", kind: "image", refs: false, parts: ["clip_l", "clip_g", "t5xxl"], required: ["clip_l", "clip_g", "t5xxl"], steps: 28, cfg: 4.5, size: 1024, sampler: "euler", negative: true, offload: true },
+  kontext: { label: "FLUX.1 Kontext (Bildbearbeitung)", kind: "image", refs: true, parts: ["vae", "clip_l", "t5xxl"], required: ["vae", "clip_l", "t5xxl"], steps: 20, cfg: 1, size: 768, sampler: "euler", negative: false, offload: true },
+  zimage: { label: "Z-Image Turbo", kind: "image", refs: false, parts: ["vae", "llm"], required: ["vae", "llm"], steps: 8, cfg: 1, size: 768, sampler: "euler", negative: false, offload: true },
+  qwen: { label: "Qwen Image", kind: "image", refs: false, parts: ["vae", "llm"], required: ["vae", "llm"], steps: 20, cfg: 2.5, flow: 3, size: 768, sampler: "euler", negative: true, offload: true },
+  qwenedit: { label: "Qwen Image Edit (Bildbearbeitung)", kind: "image", refs: true, parts: ["vae", "llm", "llm_vision"], required: ["vae", "llm"], steps: 20, cfg: 2.5, flow: 3, size: 768, sampler: "euler", negative: true, offload: true },
+  other: { label: "Anderes Bildmodell (eigene Komponenten)", kind: "image", refs: true, parts: ["vae", "clip_l", "clip_g", "t5xxl", "llm", "llm_vision"], required: [], steps: 20, cfg: 4, size: 768, sampler: "euler", negative: true, offload: true },
   wan22: { label: "Wan 2.2 TI2V 5B (Video)", kind: "video", parts: ["vae", "t5xxl"], required: ["vae", "t5xxl"], steps: 20, cfg: 6, flow: 3, fps: 24, sampler: "euler", negative: true, offload: true },
   wan: { label: "Anderes Videomodell (z. B. Wan 2.1, Wan 2.2 14B)", kind: "video", parts: ["vae", "t5xxl", "clip_vision", "high_noise"], required: ["vae", "t5xxl"], steps: 20, cfg: 6, flow: 3, fps: 16, sampler: "euler", negative: true, offload: true },
 };
@@ -22,12 +28,53 @@ const ROLES = {
   clip_g: "Text-Encoder CLIP-G",
   t5xxl: "Text-Encoder T5-XXL / UMT5",
   llm: "Text-Encoder LLM (z. B. Qwen)",
+  llm_vision: "LLM-Vision (mmproj, für Qwen Edit)",
   clip_vision: "CLIP Vision (Wan 2.1 I2V)",
 };
 // Ein-Klick-Pakete: kleinste frei zugängliche Varianten.
 const PRESETS = {
+  zimage: {
+    label: "Bild: Z-Image Turbo · ca. 6,7 GB",
+    desc: "Sehr schnell (8 Schritte), fotorealistisch, gute Textdarstellung.",
+    files: [
+      { source: "https://huggingface.co/leejet/Z-Image-Turbo-GGUF/blob/main/z_image_turbo-Q4_K.gguf", role: "diffusion", family: "zimage" },
+      { source: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/blob/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf", role: "llm", family: "zimage" },
+      { source: "https://huggingface.co/Comfy-Org/Z-Image-Turbo/blob/main/split_files/vae/ae.safetensors", role: "vae", family: "zimage" },
+    ],
+  },
+  sd15: {
+    label: "Bild: Stable Diffusion 1.5 · ca. 4,3 GB",
+    desc: "Klassiker, läuft auf fast jeder Hardware, riesige Auswahl an Varianten.",
+    files: [{ source: "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/blob/main/v1-5-pruned-emaonly.safetensors", role: "checkpoint", family: "sd" }],
+  },
+  sdxlturbo: {
+    label: "Bild: SDXL Turbo · ca. 6,9 GB",
+    desc: "Bilder in 1–4 Schritten, ideal für schnelle Entwürfe (Lizenz: nur nicht-kommerziell).",
+    files: [{ source: "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/sd_xl_turbo_1.0_fp16.safetensors", role: "checkpoint", family: "sdturbo" }],
+  },
+  kontext: {
+    label: "Bearbeiten: FLUX.1 Kontext · ca. 10 GB",
+    desc: "Bearbeitet die Vorlage per Anweisung, z. B. „mach den Himmel rot“ (Lizenz: nur nicht-kommerziell).",
+    files: [
+      { source: "https://huggingface.co/QuantStack/FLUX.1-Kontext-dev-GGUF/blob/main/flux1-kontext-dev-Q4_K_S.gguf", role: "diffusion", family: "kontext" },
+      { source: "https://huggingface.co/comfyanonymous/flux_text_encoders/blob/main/clip_l.safetensors", role: "clip_l", family: "kontext" },
+      { source: "https://huggingface.co/city96/t5-v1_1-xxl-encoder-gguf/blob/main/t5-v1_1-xxl-encoder-Q4_K_M.gguf", role: "t5xxl", family: "kontext" },
+      { source: "https://huggingface.co/Comfy-Org/Z-Image-Turbo/blob/main/split_files/vae/ae.safetensors", role: "vae", family: "kontext" },
+    ],
+  },
+  qwenedit: {
+    label: "Bearbeiten: Qwen Image Edit · ca. 15 GB",
+    desc: "Starke Bildbearbeitung mit Vorlage und Gesichtern. Groß und langsam, 32 GB RAM empfohlen.",
+    files: [
+      { source: "https://huggingface.co/QuantStack/Qwen-Image-Edit-2509-GGUF/blob/main/Qwen-Image-Edit-2509-Q3_K_S.gguf", role: "diffusion", family: "qwenedit" },
+      { source: "https://huggingface.co/mradermacher/Qwen2.5-VL-7B-Instruct-GGUF/blob/main/Qwen2.5-VL-7B-Instruct.Q4_K_M.gguf", role: "llm", family: "qwenedit" },
+      { source: "https://huggingface.co/mradermacher/Qwen2.5-VL-7B-Instruct-GGUF/blob/main/Qwen2.5-VL-7B-Instruct.mmproj-Q8_0.gguf", role: "llm_vision", family: "qwenedit" },
+      { source: "https://huggingface.co/Comfy-Org/Qwen-Image/blob/main/split_files/vae/qwen_image_vae.safetensors", role: "vae", family: "qwenedit" },
+    ],
+  },
   flux3: {
     label: "Bild: FLUX.3 Klein · ca. 6,4 GB",
+    desc: "Vielseitig, nutzt Vorlagen und Gesichter als Referenz.",
     files: [
       { source: "https://huggingface.co/leejet/flux-3-image-klein-GGUF/blob/main/flux3-image-klein-Q4_K.gguf", role: "diffusion", family: "flux3" },
       { source: "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/blob/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf", role: "llm", family: "flux3" },
@@ -36,6 +83,7 @@ const PRESETS = {
   },
   wan22: {
     label: "Video: Wan 2.2 5B · ca. 8 GB",
+    desc: "Text zu Video und Bild zu Video, Ausgabe als WebM.",
     files: [
       { source: "https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/blob/main/Wan2.2-TI2V-5B-Q4_K_S.gguf", role: "diffusion", family: "wan22" },
       { source: "https://huggingface.co/city96/umt5-xxl-encoder-gguf/blob/main/umt5-xxl-encoder-Q4_K_S.gguf", role: "t5xxl", family: "wan22" },
@@ -69,7 +117,7 @@ function negativeWithFilters(base, { allowNsfw, allowPeople }) {
   if (!allowPeople) extra.push("person, people, human, man, woman, face, portrait, crowd, pedestrian");
   return [base.trim(), ...extra].filter(Boolean).join(", ");
 }
-const TEXT_ENCODER_ROLES = new Set(["clip_l", "clip_g", "t5xxl", "llm"]);
+const TEXT_ENCODER_ROLES = new Set(["clip_l", "clip_g", "t5xxl", "llm", "llm_vision"]);
 // Qualitätsstufen: Faktor auf Schritte und Bildgröße der Modellfamilie.
 const QUALITY = { draft: { label: "Entwurf (schnell)", steps: 0.5, size: -256 }, standard: { label: "Standard", steps: 1, size: 0 }, high: { label: "Hoch (langsam)", steps: 1.5, size: 256 } };
 
@@ -160,8 +208,8 @@ $("app").innerHTML = `<main>
 
 <section class="card" id="drop">
  <h2>Modelle</h2>
- <p class="hint">Lade ein Paket mit einem Klick oder ziehe eigene Modelldateien (.safetensors, .gguf) in dieses Fenster.</p>
- <div class="presets">${Object.entries(PRESETS).map(([k, p]) => `<button type="button" class="secondary" data-preset="${k}">${esc(p.label)}</button>`).join("")}</div>
+ <p class="hint">Lade ein Paket mit einem Klick oder ziehe eigene Modelldateien (.safetensors, .gguf) in dieses Fenster. Mosaic erkennt viele Modelle am Dateinamen (FLUX, Z-Image, Qwen Image, SD 1.5/SDXL/3.5, Wan …) und ordnet Art und Familie automatisch zu.</p>
+ <div class="catalog">${Object.entries(PRESETS).map(([k, p]) => `<div class="catalog-item"><strong>${esc(p.label.split(" · ")[0])}</strong><small>${esc(p.desc || "")}</small><button type="button" class="secondary" data-preset="${k}">Laden · ${esc(p.label.split(" · ")[1] || "")}</button></div>`).join("")}</div>
  <h3>Eigenes Modell hinzufügen</h3>
  <label>Lokaler Dateipfad oder Hugging-Face-Link<input id="source" spellcheck="false" placeholder="/Users/du/Modelle/mein-modell.safetensors  oder  https://huggingface.co/…/blob/main/datei.gguf"></label>
  <div class="row">
@@ -421,16 +469,31 @@ $("bug-report").onclick = () => work("Fehlerbericht wird erstellt …", async ()
 // ---------- Bibliothek ----------
 function guess(path) {
   const n = path.toLowerCase().split(/[\\/]/).pop();
-  const fam = /wan.?2\.?2.*(ti2v|5b)/.test(n) ? "wan22" : /wan|umt5/.test(n) ? "wan" : /flux[-_.]?3|klein/.test(n) ? "flux3" : /flux/.test(n) ? "flux1" : /qwen|z[-_]?image|sd3|chroma|lumina/.test(n) ? "other" : "sd";
-  let role = "checkpoint";
-  if (/high.?noise/.test(n)) role = "high_noise";
-  else if (/clip[-_]?vision/.test(n)) role = "clip_vision";
+  // Familie: zuerst spezifische Namen, dann allgemeine.
+  const fam =
+    /wan.?2\.?2.*(ti2v|5b|vae)/.test(n) ? "wan22" :
+    /wan|umt5/.test(n) ? "wan" :
+    /kontext/.test(n) ? "kontext" :
+    /qwen.?image.?edit/.test(n) ? "qwenedit" :
+    /qwen.?image/.test(n) ? "qwen" :
+    /qwen.?2\.?5.?vl|mmproj/.test(n) ? "qwenedit" :
+    /z.?image/.test(n) ? "zimage" :
+    /qwen3.?4b|qwen_3_4b/.test(n) ? "zimage" :
+    /flux.?3|klein|qwen3.?vl/.test(n) ? "flux3" :
+    /flux/.test(n) ? "flux1" :
+    /sd.?3/.test(n) ? "sd3" :
+    /turbo|lightning|hyper/.test(n) ? "sdturbo" :
+    /chroma|lumina|hidream|ovis|pixart/.test(n) ? "other" : "sd";
+  let role;
+  if (/mmproj/.test(n)) role = "llm_vision";
+  else if (/high.?noise/.test(n)) role = "high_noise";
+  else if (/clip.?vision/.test(n)) role = "clip_vision";
   else if (/(^|[-_.])(ae|vae)([-_.]|$)|vae/.test(n)) role = "vae";
-  else if (/clip[-_]?l/.test(n)) role = "clip_l";
-  else if (/clip[-_]?g/.test(n)) role = "clip_g";
+  else if (/clip.?l/.test(n)) role = "clip_l";
+  else if (/clip.?g/.test(n)) role = "clip_g";
   else if (/t5|umt5/.test(n)) role = "t5xxl";
-  else if (/qwen|llm|mistral|gemma/.test(n)) role = "llm";
-  else if (fam !== "sd") role = "diffusion";
+  else if (/qwen.?(\d|.*(vl|instruct))|llm|mistral|gemma/.test(n) && !/qwen.?image/.test(n)) role = "llm";
+  else role = ["sd", "sdturbo", "sd3"].includes(fam) ? "checkpoint" : "diffusion";
   return { role, family: fam };
 }
 $("source").addEventListener("input", () => {
@@ -555,7 +618,9 @@ function componentSelects(model, container) {
   container.innerHTML = fam.parts.map((role) => {
     const candidates = entries.filter((e) => e.role === role).sort((a, b) => (b.family === model.family) - (a.family === model.family));
     const required = fam.required.includes(role);
-    const opts = candidates.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    // Optionales Zubehör derselben Familie (z. B. mmproj für Qwen Edit) automatisch vorauswählen.
+    const preferred = candidates.find((c) => c.family === model.family)?.id;
+    const opts = candidates.map((c) => `<option value="${esc(c.id)}"${!required && c.id === preferred ? " selected" : ""}>${esc(c.name)}</option>`).join("");
     return `<label>${esc(ROLES[role])}${required ? "" : " (optional)"}<select data-role="${role}">${required ? "" : '<option value="">—</option>'}${opts || (required ? '<option value="">fehlt – bitte hinzufügen</option>' : "")}</select></label>`;
   }).join("");
 }
@@ -656,7 +721,7 @@ $("studio").onsubmit = (e) => {
     negative: fam.negative ? negativeWithFilters($("negative").value, { allowNsfw, allowPeople }) : "",
     steps: Number($("steps").value) || fam.steps, cfg: Number($("cfg").value),
     seed, sampler: $("sampler").value, offload: $("offload").checked,
-    init_image: null, refs: [], faces: [], ...flags,
+    init_image: null, refs: [], faces: [], flow_shift: fam.flow || 0, ...flags,
   };
 
   if (mode === "image") {

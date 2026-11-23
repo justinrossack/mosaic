@@ -46,21 +46,36 @@ Im Bereich **Gesichter** Personen mit Namen anlegen (mit Bestätigung, dass die 
 
 **Ersteinrichtung:** Beim ersten Start ohne Modelle bietet Mosaic „Alles laden (Bild + Video, ca. 14 GB)“ an – passend für Intel Core Ultra mit Arc-Grafik (empfohlen 32 GB RAM) und Apple Silicon.
 
-**Ein Klick:**
+**Modellkatalog (ein Klick, alle frei zugänglich):**
 
-- **Bild: FLUX.3 Klein** (ca. 6,4 GB): Diffusionsmodell (GGUF Q4), Qwen3-VL-Text-Encoder und VAE. Kann Vorlagen und Gesichter als Referenz nutzen.
-- **Video: Wan 2.2 5B** (ca. 8 GB): Wan 2.2 TI2V 5B (GGUF Q4), UMT5-Text-Encoder und Wan-2.2-VAE. Text-zu-Video und Bild-zu-Video, Ausgabe als WebM.
+| Paket | Größe | Wofür |
+| --- | --- | --- |
+| Bild: Z-Image Turbo | ca. 6,7 GB | sehr schnell (8 Schritte), fotorealistisch |
+| Bild: FLUX.3 Klein | ca. 6,4 GB | vielseitig, Vorlagen und Gesichter als Referenz |
+| Bild: Stable Diffusion 1.5 | ca. 4,3 GB | Klassiker, läuft fast überall |
+| Bild: SDXL Turbo | ca. 6,9 GB | Entwürfe in 1–4 Schritten (nur nicht-kommerziell) |
+| Bearbeiten: FLUX.1 Kontext | ca. 10 GB | Vorlage per Anweisung ändern (nur nicht-kommerziell) |
+| Bearbeiten: Qwen Image Edit | ca. 15 GB | starke Bearbeitung mit Vorlage/Gesichtern, 32 GB RAM empfohlen |
+| Video: Wan 2.2 5B | ca. 8 GB | Text/Bild zu Video (WebM) |
 
 **Eigene Modelle:** Dateien (`.safetensors`, `.gguf`, `.ckpt`, `.sft`) ins Fenster ziehen oder einen lokalen Pfad bzw. Hugging-Face-Dateilink eintragen. Importierte Dateien bleiben an ihrem Ort, Mosaic merkt sich nur den Pfad. Für jede Datei werden **Art** und **Familie** festgelegt; Mosaic rät beides aus dem Dateinamen, in der Bibliothek lässt es sich ändern.
 
-| Familie | Hauptdatei | Zubehör |
-| --- | --- | --- |
-| SD 1.5 / SDXL | Checkpoint | VAE (optional) |
-| FLUX.1 | Diffusionsmodell | VAE, CLIP-L, T5-XXL |
-| FLUX.3 Klein | Diffusionsmodell | VAE, LLM (Qwen3-VL 4B) |
-| Andere (z. B. Z-Image, Qwen Image, SD 3.5) | Checkpoint oder Diffusionsmodell | frei wählbar |
-| Wan 2.2 TI2V 5B (Video) | Diffusionsmodell | VAE (Wan 2.2), T5-XXL/UMT5 |
-| Andere Videomodelle (Wan 2.1, Wan 2.2 14B) | Diffusionsmodell | VAE, UMT5, optional CLIP Vision / High-Noise-Modell |
+| Familie | Hauptdatei | Zubehör | Vorlage/Gesichter |
+| --- | --- | --- | --- |
+| SD 1.5 / SDXL | Checkpoint | VAE (optional) | Ausgangsbild |
+| SD/SDXL Turbo, Lightning, Hyper | Checkpoint | VAE (optional) | Ausgangsbild |
+| SD 3.5 | Checkpoint | CLIP-L, CLIP-G, T5-XXL | Ausgangsbild |
+| FLUX.1 (dev/schnell) | Diffusionsmodell | VAE, CLIP-L, T5-XXL | Ausgangsbild |
+| FLUX.1 Kontext | Diffusionsmodell | VAE, CLIP-L, T5-XXL | Referenz |
+| FLUX.3 Klein | Diffusionsmodell | VAE, LLM (Qwen3-VL 4B) | Referenz |
+| Z-Image Turbo | Diffusionsmodell | VAE (FLUX.1 ae), LLM (Qwen3 4B) | Ausgangsbild |
+| Qwen Image | Diffusionsmodell | VAE (Qwen), LLM (Qwen2.5-VL 7B) | Ausgangsbild |
+| Qwen Image Edit | Diffusionsmodell | VAE (Qwen), LLM (Qwen2.5-VL 7B), LLM-Vision (mmproj) | Referenz |
+| Andere (z. B. Chroma, Lumina) | Checkpoint oder Diffusionsmodell | frei wählbar | Referenz, wenn das Modell es kann |
+| Wan 2.2 TI2V 5B (Video) | Diffusionsmodell | VAE (Wan 2.2), UMT5 | Startbild |
+| Andere Videomodelle (Wan 2.1, Wan 2.2 14B) | Diffusionsmodell | VAE, UMT5, optional CLIP Vision / High-Noise-Modell | Startbild |
+
+Beim Import erkennt Mosaic Art und Familie an typischen Dateinamen; beides lässt sich in der Bibliothek ändern. Zubehör derselben Familie wird automatisch vorausgewählt.
 
 Welche Modelle die Engine kennt, steht in der [Modellübersicht von stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp/tree/master/docs/models). Zugangsbeschränkte Hugging-Face-Repos lassen sich nicht direkt laden: Datei im Browser herunterladen und dann importieren.
 
@@ -78,5 +93,5 @@ Unter Windows erledigt `build-windows.bat` die Schritte bis zum fertigen Install
 
 Ein Versions-Tag startet den Workflow `.github/workflows/release.yml`. Er baut den Windows-Installer und das macOS-Disk-Image auf nativen Runnern und legt beide im selben GitHub-Release ab:
 
-    git tag v0.4.0
-    git push origin v0.4.0
+    git tag v0.5.0
+    git push origin v0.5.0

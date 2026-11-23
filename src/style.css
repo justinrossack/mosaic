@@ -84,3 +84,8 @@ body[data-mode="image"] .video-only, body[data-mode="video"] .image-only {displa
 .approve {display:flex;align-items:center;gap:4px;font-size:12px;color:#9aa3b2}
 #bug-text {width:100%;margin-bottom:10px;box-sizing:border-box}
 @media (max-width:620px){.history-item{grid-template-columns:48px 1fr}.history-actions{grid-column:1/-1}}
+.catalog {display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.catalog-item {display:flex;flex-direction:column;gap:6px;border:1px solid #2a2f3c;border-radius:10px;padding:12px;background:#1a1f29}
+.catalog-item strong {font-size:14px}
+.catalog-item small {color:#9aa3b2;font-size:12px;line-height:1.4;flex:1}
+.catalog-item button {justify-self:start;align-self:flex-start;font-size:13px}
