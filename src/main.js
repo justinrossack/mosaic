@@ -49,6 +49,30 @@ const IMAGE_SIZES = [512, 640, 768, 896, 1024];
 const VIDEO_SIZES = { "832x480": "832 × 480 (quer)", "480x832": "480 × 832 (hoch)", "640x640": "640 × 640 (quadratisch)", "1280x704": "1280 × 704 (HD, langsam)" };
 const VIDEO_LENGTHS = { 17: "kurz (17 Bilder)", 33: "mittel (33 Bilder)", 49: "lang (49 Bilder)", 81: "sehr lang (81 Bilder)" };
 
+// Inhaltsfilter (Begriffe als ganze Wörter). Das Backend prüft dieselben Regeln.
+const NSFW_TERMS = ["nsfw", "porno", "porn", "pornografie", "pornography", "xxx", "nude", "nudes", "naked", "nackt", "erotic", "erotik", "erotisch", "sex", "sexual", "sexuell", "hentai", "explicit", "topless", "oben ohne", "genitals", "genitalien", "penis", "vagina", "vulva", "boobs", "tits", "breasts", "brüste", "nipples", "nippel", "fetish", "fetisch", "bdsm", "hardcore", "softcore", "uncensored", "unzensiert", "blowjob", "handjob", "intercourse", "geschlechtsverkehr", "strip", "striptease", "lingerie", "unterwäsche", "bikini", "cum", "orgasm", "orgasmus", "anal", "lesbian", "gay sex"];
+const PEOPLE_TERMS = ["mensch", "menschen", "person", "personen", "mann", "männer", "frau", "frauen", "kind", "kinder", "mädchen", "junge", "jungen", "baby", "babys", "kleinkind", "porträt", "portrait", "gesicht", "gesichter", "selfie", "model", "schauspieler", "schauspielerin", "human", "humans", "people", "man", "men", "woman", "women", "girl", "girls", "boy", "boys", "child", "children", "face", "faces", "lady", "gentleman", "couple", "paar", "crowd", "menschenmenge", "passant", "passanten", "fußgänger", "pedestrian", "pedestrians", "figure", "figur", "körper", "body"];
+const normalizeText = (text) => ` ${String(text).toLowerCase().replace(/[^a-zäöüß0-9]+/g, " ").trim()} `;
+const containsTerm = (norm, terms) => terms.some((t) => norm.includes(` ${t} `));
+function contentError(prompt, { allowNsfw, allowPeople, hasFaces, hasTemplate }) {
+  const norm = normalizeText(prompt);
+  const nsfw = containsTerm(norm, NSFW_TERMS);
+  if (nsfw && (hasFaces || hasTemplate)) return "NSFW ist mit Gesichtern oder Vorlagen grundsätzlich gesperrt, damit keine sexuellen Bilder echter Personen entstehen.";
+  if (nsfw && !allowNsfw) return "NSFW ist ausgeschaltet. Den Schalter „NSFW erlauben“ aktivieren oder den Prompt anpassen.";
+  if (!allowPeople && hasFaces) return "„Menschen generieren“ ist ausgeschaltet. Bitte aktivieren oder die Gesichter abwählen.";
+  if (!allowPeople && containsTerm(norm, PEOPLE_TERMS)) return "„Menschen generieren“ ist ausgeschaltet, der Prompt beschreibt aber Personen.";
+  return null;
+}
+function negativeWithFilters(base, { allowNsfw, allowPeople }) {
+  const extra = [];
+  if (!allowNsfw) extra.push("nsfw, nude, naked, porn, explicit, erotic, sexual, topless");
+  if (!allowPeople) extra.push("person, people, human, man, woman, face, portrait, crowd, pedestrian");
+  return [base.trim(), ...extra].filter(Boolean).join(", ");
+}
+const TEXT_ENCODER_ROLES = new Set(["clip_l", "clip_g", "t5xxl", "llm"]);
+// Qualitätsstufen: Faktor auf Schritte und Bildgröße der Modellfamilie.
+const QUALITY = { draft: { label: "Entwurf (schnell)", steps: 0.5, size: -256 }, standard: { label: "Standard", steps: 1, size: 0 }, high: { label: "Hoch (langsam)", steps: 1.5, size: 256 } };
+
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const options = (map, selected) => Object.entries(map).map(([k, v]) => `<option value="${k}"${String(k) === String(selected) ? " selected" : ""}>${esc(v.label ?? v)}</option>`).join("");
@@ -57,13 +81,29 @@ const family = (entry) => FAMILIES[entry?.family] || FAMILIES.other;
 $("app").innerHTML = `<main>
 <header><h1>Mosaic</h1><label class="device">Gerät<select id="device"><option value="arc">Intel Core Ultra · Arc (Windows)</option><option value="metal">Apple Silicon · Metal (macOS)</option></select></label></header>
 
+<section class="card setup" id="setup" hidden>
+ <h2>Ersteinrichtung</h2>
+ <p class="hint">Noch keine Modelle installiert. Für dein Gerät (Intel Core Ultra mit Arc-Grafik oder Apple Silicon, ab 16 GB RAM; empfohlen 32 GB) passen diese Pakete. Mosaic lädt sie einmalig herunter, danach funktioniert alles offline.</p>
+ <div class="presets"><button type="button" id="setup-all">Alles laden (Bild + Video, ca. 14 GB)</button><button type="button" class="secondary" id="setup-image">Nur Bild (ca. 6,4 GB)</button></div>
+</section>
+
 <section class="card">
  <div class="tabs" role="tablist">
   <button type="button" role="tab" class="tab" data-mode="image" aria-selected="true">Bild erstellen</button>
   <button type="button" role="tab" class="tab" data-mode="video" aria-selected="false">Video erstellen</button>
  </div>
  <form id="studio">
-  <label>Modell<select id="model"></select></label>
+  <div class="row">
+   <label>Modell<select id="model"></select></label>
+   <label>Qualität<select id="quality">${options(QUALITY, "standard")}</select></label>
+  </div>
+  <div class="toggles" aria-label="Zubehör und Inhaltsfilter">
+   <label class="toggle-chip"><input type="checkbox" id="use-vae" checked> VAE verwenden</label>
+   <label class="toggle-chip"><input type="checkbox" id="use-text-encoder" checked> Text-Encoder verwenden</label>
+   <label class="toggle-chip"><input type="checkbox" id="allow-people" checked> Menschen generieren</label>
+   <label class="toggle-chip"><input type="checkbox" id="allow-nsfw"> NSFW erlauben</label>
+  </div>
+  <p class="hint-inline" id="toggle-hint"></p>
   <div id="parts" class="row"></div>
 
   <div class="block">
@@ -100,14 +140,22 @@ $("app").innerHTML = `<main>
   </div></details>
   <button id="create">Bild erstellen</button>
  </form>
- <figure hidden id="result"><img id="picture" alt="Ergebnis" hidden><video id="movie" controls loop playsinline hidden></video><figcaption id="path"></figcaption></figure>
+ <figure hidden id="result"><img id="picture" alt="Ergebnis" hidden><video id="movie" controls loop playsinline hidden></video><figcaption id="path"></figcaption>
+  <div class="result-actions"><button type="button" class="secondary" id="export">Speichern</button><button type="button" class="ghost" id="reveal">Im Ordner zeigen</button></div></figure>
 </section>
 
 <section class="card">
  <h2>Gesichter</h2>
  <p class="hint">Lege Personen an und lade eigene Fotos hoch (am besten 1–3 gut beleuchtete Porträts). Die Fotos bleiben nur auf diesem Gerät und werden beim Erstellen als Referenz verwendet.</p>
  <div class="inline-form"><input id="face-name" maxlength="60" placeholder="Name der Person, z. B. Justin"><button type="button" id="face-add" class="secondary">Person anlegen</button></div>
+ <label class="check consent"><input type="checkbox" id="face-consent"> Die Person hat eingewilligt, dass ihr Gesicht verwendet wird – oder ich bin es selbst.</label>
  <div id="face-list"></div>
+</section>
+
+<section class="card">
+ <div class="card-head"><h2>Verlauf</h2><button type="button" class="ghost" id="history-clear">Verlauf löschen</button></div>
+ <p class="hint">Jede Erstellung wird automatisch mit Prompt und Einstellungen gespeichert.</p>
+ <div id="history"></div>
 </section>
 
 <section class="card" id="drop">
@@ -122,7 +170,15 @@ $("app").innerHTML = `<main>
  </div>
  <button type="button" id="add">Hinzufügen</button>
  <h3>Bibliothek</h3>
+ <label class="check"><input type="checkbox" id="whitelist-only"> Nur freigegebene Modelle verwenden (Whitelist)</label>
  <div id="library"></div>
+</section>
+
+<section class="card">
+ <h2>Fehler melden</h2>
+ <p class="hint">Erstellt einen Bericht mit Systeminfo, Modellliste und dem Protokoll des letzten Engine-Laufs. Fotos und Bilder sind nicht enthalten.</p>
+ <textarea id="bug-text" rows="2" maxlength="4000" placeholder="Was ist passiert? (optional)"></textarea>
+ <button type="button" class="secondary" id="bug-report">Fehlerbericht erstellen</button>
 </section>
 <p role="status" id="status"></p>
 </main>`;
@@ -136,8 +192,28 @@ const status = (text) => ($("status").textContent = text);
 function controls(value) {
   busy = value;
   for (const el of document.querySelectorAll("button, input, select, textarea")) el.disabled = value;
-  if (!value) $("create").disabled = !$("model").value;
+  if (!value) { $("create").disabled = !$("model").value; syncToggles(); }
 }
+// Schalter wirken nur auf optionales Zubehör; Pflichtteile des Modells werden immer verwendet.
+function syncToggles() {
+  const useVae = $("use-vae").checked, useTe = $("use-text-encoder").checked;
+  const fam = currentFamily();
+  const forced = [];
+  for (const sel of $("parts").querySelectorAll("select[data-role]")) {
+    const role = sel.dataset.role;
+    const wantsOff = (role === "vae" && !useVae) || (TEXT_ENCODER_ROLES.has(role) && !useTe);
+    const required = fam?.required.includes(role);
+    if (wantsOff && required) forced.push(ROLES[role]);
+    const off = wantsOff && !required;
+    sel.disabled = busy || off;
+    sel.closest("label")?.classList.toggle("part-disabled", off);
+  }
+  $("toggle-hint").textContent = forced.length ? `Dieses Modell braucht ${forced.join(" und ")} zwingend – wird trotzdem verwendet.` : "";
+  const allowPeople = $("allow-people").checked;
+  for (const cb of $("face-picker").querySelectorAll("input")) cb.disabled = busy || !allowPeople;
+  $("face-picker").classList.toggle("part-disabled", !allowPeople);
+}
+for (const id of ["use-vae", "use-text-encoder", "allow-people", "allow-nsfw"]) $(id).addEventListener("change", () => { renderFacePicker(); syncToggles(); });
 async function work(message, fn) {
   if (busy) return;
   controls(true);
@@ -213,7 +289,8 @@ async function refreshFaces() {
 }
 async function renderFaceList() {
   $("face-list").innerHTML = faces.length ? faces.map((f) => `<div class="person" data-id="${esc(f.id)}">
-      <div class="person-head"><strong>${esc(f.name)}</strong><span class="hint-inline">${f.images.length} Foto(s)</span>
+      <div class="person-head"><strong>${esc(f.name)}</strong><span class="hint-inline">${f.images.length} Foto(s)${f.consent ? "" : " · Einwilligung nicht bestätigt"}</span>
+        ${f.consent ? "" : '<button type="button" class="ghost" data-face-consent>Einwilligung bestätigen</button>'}
         <label class="button-like secondary">Fotos hinzufügen<input type="file" accept="image/png,image/jpeg,image/webp" multiple hidden data-face-upload></label>
         <button type="button" class="ghost" data-face-delete>Person löschen</button></div>
       <div class="thumbs">${f.images.map((img) => `<div class="thumb"><img data-src="${esc(img)}" alt=""><button type="button" class="ghost" data-face-image="${esc(img)}" title="Foto entfernen">✕</button></div>`).join("") || '<span class="hint-inline">Noch keine Fotos.</span>'}</div>
@@ -229,9 +306,12 @@ let facesDir = "";
 const facePath = (face, img) => (facesDir ? `${facesDir}${img}` : null);
 
 $("face-add").onclick = () => work("Person wird angelegt …", async () => {
-  const face = await invoke("face_create", { name: $("face-name").value });
+  const face = await invoke("face_create", { name: $("face-name").value, consent: $("face-consent").checked });
   $("face-name").value = "";
+  $("face-consent").checked = false;
   await refreshFaces();
+  $("whitelist-only").checked = (await invoke("get_settings")).whitelist_only;
+  await refreshHistory();
   status(`„${face.name}“ angelegt. Jetzt Fotos hinzufügen.`);
 });
 $("face-list").addEventListener("change", (ev) => {
@@ -252,7 +332,10 @@ $("face-list").addEventListener("click", (ev) => {
   const person = ev.target.closest(".person");
   if (!person) return;
   const id = person.dataset.id;
-  if (ev.target.matches("[data-face-image]")) {
+  if (ev.target.matches("[data-face-consent]")) {
+    if (!ev.target.classList.contains("armed")) { ev.target.classList.add("armed"); ev.target.textContent = "Person hat eingewilligt / bin ich – bestätigen"; return; }
+    work("Wird bestätigt …", async () => { await invoke("face_confirm", { id }); await refreshFaces(); status("Einwilligung bestätigt."); });
+  } else if (ev.target.matches("[data-face-image]")) {
     work("Foto wird entfernt …", async () => { await invoke("face_remove_image", { id, image: ev.target.dataset.faceImage }); await refreshFaces(); status("Foto entfernt."); });
   } else if (ev.target.matches("[data-face-delete]")) {
     if (!ev.target.classList.contains("armed")) { ev.target.classList.add("armed"); ev.target.textContent = "Wirklich löschen?"; return; }
@@ -262,7 +345,8 @@ $("face-list").addEventListener("click", (ev) => {
 
 function renderFacePicker() {
   const set = selectedFaces[mode];
-  const usable = faces.filter((f) => f.images.length);
+  const usable = faces.filter((f) => f.images.length && f.consent);
+  syncTogglesLater();
   $("face-picker").innerHTML = usable.length
     ? usable.map((f) => `<label class="chip"><input type="checkbox" value="${esc(f.id)}"${set.has(f.id) ? " checked" : ""}> ${esc(f.name)}</label>`).join("")
     : `<span class="hint-inline">Noch keine Gesichter. Lege unten im Bereich „Gesichter“ Personen mit Fotos an.</span>`;
@@ -285,6 +369,53 @@ $("face-picker").addEventListener("change", (ev) => {
   const set = selectedFaces[mode];
   ev.target.checked ? set.add(ev.target.value) : set.delete(ev.target.value);
   renderFacePicker();
+});
+
+const syncTogglesLater = () => queueMicrotask(() => syncToggles());
+
+// ---------- Verlauf ----------
+let historyItems = [];
+async function refreshHistory() {
+  historyItems = await invoke("history");
+  const items = historyItems.slice(0, 30);
+  $("history").innerHTML = items.length ? items.map((h, i) => `<div class="history-item" data-i="${i}">
+      <div class="history-thumb" data-out="${esc(h.output)}"></div>
+      <div class="history-text"><strong>${esc(h.prompt)}</strong>
+        <small>${new Date(h.time * 1000).toLocaleString("de-DE")} · ${h.mode === "video" ? "Video" : "Bild"} · ${esc(h.model)}${h.faces?.length ? " · " + esc(h.faces.join(", ")) : ""} · Seed ${h.seed}</small></div>
+      <div class="history-actions"><button type="button" class="ghost" data-h-use>Prompt übernehmen</button><button type="button" class="ghost" data-h-show>Anzeigen</button></div>
+    </div>`).join("") : `<p class="hint">Noch keine Erstellungen.</p>`;
+  for (const el of $("history").querySelectorAll(".history-thumb")) {
+    const out = el.dataset.out;
+    if (/\.(png|jpe?g|webp)$/i.test(out)) mediaUrl(out).then((u) => (el.innerHTML = `<img src="${u}" alt="">`)).catch(() => (el.textContent = "–"));
+    else el.textContent = "▶";
+  }
+}
+$("history").addEventListener("click", (ev) => {
+  const row = ev.target.closest(".history-item");
+  if (!row) return;
+  const h = historyItems[Number(row.dataset.i)];
+  if (ev.target.matches("[data-h-use]")) {
+    if (h.mode !== mode) setMode(h.mode);
+    $("prompt").value = h.prompt;
+    $("seed").value = h.seed;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    status("Prompt und Seed übernommen.");
+  } else if (ev.target.matches("[data-h-show]")) {
+    showResult(h.output, h.seed).catch(() => status("Datei nicht mehr vorhanden."));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+});
+$("history-clear").onclick = (ev) => {
+  if (!ev.target.classList.contains("armed")) { ev.target.classList.add("armed"); ev.target.textContent = "Wirklich löschen?"; return; }
+  work("Verlauf wird gelöscht …", async () => { await invoke("history_clear"); ev.target.classList.remove("armed"); ev.target.textContent = "Verlauf löschen"; await refreshHistory(); status("Verlauf gelöscht. Die Bilder und Videos selbst bleiben erhalten."); });
+};
+
+// ---------- Fehlerbericht ----------
+$("bug-report").onclick = () => work("Fehlerbericht wird erstellt …", async () => {
+  const path = await invoke("bug_report", { description: $("bug-text").value });
+  $("bug-text").value = "";
+  await invoke("reveal", { path }).catch(() => {});
+  status(`Fehlerbericht erstellt: ${path}`);
 });
 
 // ---------- Bibliothek ----------
@@ -313,6 +444,7 @@ function renderLibrary() {
   $("library").innerHTML = entries.length
     ? entries.map((e) => `<div class="entry" data-id="${esc(e.id)}">
         <div class="name" title="${esc(e.path)}">${esc(e.name)}<small>${formatSize(e.size)} · ${e.managed ? "heruntergeladen" : "importiert"}</small></div>
+        <label class="approve" title="In der Whitelist freigeben"><input type="checkbox" data-approve${e.approved ? " checked" : ""}> frei</label>
         <select data-field="role">${options(ROLES, e.role)}</select>
         <select data-field="family">${options(FAMILIES, e.family)}</select>
         <button type="button" class="ghost" data-remove title="${e.managed ? "Datei löschen" : "Aus der Bibliothek entfernen"}">✕</button>
@@ -322,6 +454,9 @@ function renderLibrary() {
 $("library").addEventListener("change", (ev) => {
   const row = ev.target.closest(".entry");
   if (!row) return;
+  if (ev.target.matches("[data-approve]")) {
+    return work("Speichere …", async () => { await invoke("approve_entry", { id: row.dataset.id, approved: ev.target.checked }); await refresh(); status(ev.target.checked ? "Freigegeben." : "Freigabe entfernt."); });
+  }
   work("Speichere …", async () => {
     await invoke("update_entry", { id: row.dataset.id, role: row.querySelector('[data-field="role"]').value, family: row.querySelector('[data-field="family"]').value });
     await refresh();
@@ -346,26 +481,35 @@ async function addSource(source, role, fam) {
     ? invoke("download", { source, role, family: fam })
     : invoke("import_file", { path: source, role, family: fam });
 }
+$("whitelist-only").onchange = () => work("Speichere …", async () => {
+  await invoke("set_settings", { settings: { whitelist_only: $("whitelist-only").checked } });
+  status($("whitelist-only").checked ? "Whitelist aktiv: Nur freigegebene Modelle werden verwendet." : "Whitelist aus.");
+});
 $("add").onclick = () => work("Modell wird hinzugefügt …", async () => {
   const entry = await addSource($("source").value.trim(), $("role").value, $("family").value);
   $("source").value = "";
   await refresh(entry.id);
   status(`„${entry.name}“ ist bereit.`);
 });
-for (const btn of document.querySelectorAll("[data-preset]")) {
-  btn.onclick = () => work("Paket wird geladen …", async () => {
-    const preset = PRESETS[btn.dataset.preset];
-    let main;
+// Lädt Pakete nacheinander und gibt die Dateien in der Whitelist frei.
+async function installPresets(keys) {
+  let main;
+  for (const key of keys) {
+    const preset = PRESETS[key];
     for (const [i, f] of preset.files.entries()) {
-      status(`Datei ${i + 1} von ${preset.files.length} wird geladen …`);
+      status(`${preset.label.split(" · ")[0]}: Datei ${i + 1} von ${preset.files.length} wird geladen …`);
       const entry = await invoke("download", f);
-      if (f.role === "diffusion" || f.role === "checkpoint") main = entry;
+      await invoke("approve_entry", { id: entry.id, approved: true });
+      if (f.role === "diffusion" || f.role === "checkpoint") main ??= entry;
     }
-    if (main && family(main).kind !== mode) setMode(family(main).kind);
-    await refresh(main?.id);
-    status(`${preset.label.split(" · ")[0].replace(/^\w+: /, "")} ist bereit.`);
-  });
+  }
+  if (main && family(main).kind !== mode) setMode(family(main).kind);
+  await refresh(main?.id);
+  status("Fertig – du kannst loslegen.");
 }
+for (const btn of document.querySelectorAll("[data-preset]")) btn.onclick = () => work("Paket wird geladen …", () => installPresets([btn.dataset.preset]));
+$("setup-all").onclick = () => work("Einrichtung läuft …", () => installPresets(["flux3", "wan22"]));
+$("setup-image").onclick = () => work("Einrichtung läuft …", () => installPresets(["flux3"]));
 
 // Drag & Drop: Bilder werden zur Vorlage, Modelldateien kommen in die Bibliothek.
 const onDrop = (handler) => { try { return getCurrentWebview().onDragDropEvent(handler); } catch { return Promise.resolve(); } };
@@ -415,9 +559,15 @@ function componentSelects(model, container) {
     return `<label>${esc(ROLES[role])}${required ? "" : " (optional)"}<select data-role="${role}">${required ? "" : '<option value="">—</option>'}${opts || (required ? '<option value="">fehlt – bitte hinzufügen</option>' : "")}</select></label>`;
   }).join("");
 }
-function readComponents(container) {
+function readComponents(container, model) {
   const components = {};
-  for (const sel of container.querySelectorAll("select")) components[sel.dataset.role] = sel.value;
+  const required = model ? family(model).required : [];
+  for (const sel of container.querySelectorAll("select")) {
+    const role = sel.dataset.role;
+    const off = (role === "vae" && !$("use-vae").checked) || (TEXT_ENCODER_ROLES.has(role) && !$("use-text-encoder").checked);
+    if (off && !required.includes(role)) continue;
+    components[role] = sel.value;
+  }
   return components;
 }
 function applyFamily() {
@@ -433,7 +583,7 @@ function applyFamily() {
   } else {
     $("fps").value = fam.fps;
   }
-  $("steps").value = /schnell/i.test(model.name) ? 4 : /dev/i.test(model.name) && model.family === "flux1" ? 20 : fam.steps;
+  applyQuality();
   $("cfg").value = fam.cfg;
   $("sampler").value = fam.sampler;
   $("offload").checked = fam.offload;
@@ -442,6 +592,22 @@ function applyFamily() {
   controls(busy);
 }
 $("model").addEventListener("change", applyFamily);
+// Setzt Schritte und Bildgröße passend zur Qualitätsstufe und Modellfamilie.
+function applyQuality() {
+  const model = entries.find((e) => e.id === $("model").value);
+  if (!model) return;
+  const fam = family(model);
+  const q = QUALITY[$("quality").value] || QUALITY.standard;
+  const base = /schnell/i.test(model.name) ? 4 : /dev/i.test(model.name) && model.family === "flux1" ? 20 : fam.steps;
+  $("steps").value = Math.max(1, Math.round(base * q.steps));
+  if (fam.kind === "image") {
+    const size = Math.min(1024, Math.max(512, fam.size + q.size));
+    $("width").value = $("height").value = String(IMAGE_SIZES.includes(size) ? size : fam.size);
+  } else {
+    $("video-size").value = q.size > 0 ? "1280x704" : $("video-size").value === "1280x704" ? "832x480" : $("video-size").value;
+  }
+}
+$("quality").addEventListener("change", applyQuality);
 
 function seedValue() {
   const text = $("seed").value.trim();
@@ -451,7 +617,16 @@ function missingParts(model, components) {
   return family(model).required.filter((r) => !components[r]).map((r) => ROLES[r]);
 }
 
+let lastResult = null;
+$("export").onclick = () => lastResult && work("Wird gespeichert …", async () => {
+  const dest = await invoke("export_media", { path: lastResult });
+  $("export").dataset.dest = dest;
+  status(`Gespeichert: ${dest}`);
+});
+$("reveal").onclick = () => lastResult && invoke("reveal", { path: $("export").dataset.dest || lastResult }).catch((e) => status(String(e)));
 async function showResult(path, seed) {
+  lastResult = path;
+  delete $("export").dataset.dest;
   const url = await mediaUrl(path);
   const isVideo = path.endsWith(".webm");
   $("picture").hidden = isVideo;
@@ -466,18 +641,22 @@ $("studio").onsubmit = (e) => {
   const model = entries.find((x) => x.id === $("model").value);
   if (!model) return status(mode === "video" ? "Bitte zuerst ein Videomodell laden." : "Bitte zuerst ein Bildmodell laden.");
   const fam = family(model);
-  const components = readComponents($("parts"));
+  const components = readComponents($("parts"), model);
   const missing = missingParts(model, components);
   if (missing.length) return status(`Für dieses Modell fehlt noch: ${missing.join(", ")}.`);
-  const faceIds = [...selectedFaces[mode]];
+  const allowNsfw = $("allow-nsfw").checked, allowPeople = $("allow-people").checked;
+  const faceIds = allowPeople ? [...selectedFaces[mode]] : [];
   const template = templates[mode];
+  const ruleError = contentError($("prompt").value, { allowNsfw, allowPeople, hasFaces: selectedFaces[mode].size > 0, hasTemplate: !!template });
+  if (ruleError) return status(ruleError);
+  const flags = { allow_nsfw: allowNsfw, allow_people: allowPeople };
   const seed = seedValue();
   const base = {
     model: model.id, components, prompt: $("prompt").value,
-    negative: fam.negative ? $("negative").value : "",
+    negative: fam.negative ? negativeWithFilters($("negative").value, { allowNsfw, allowPeople }) : "",
     steps: Number($("steps").value) || fam.steps, cfg: Number($("cfg").value),
     seed, sampler: $("sampler").value, offload: $("offload").checked,
-    init_image: null, refs: [], faces: [],
+    init_image: null, refs: [], faces: [], ...flags,
   };
 
   if (mode === "image") {
@@ -490,7 +669,8 @@ $("studio").onsubmit = (e) => {
     return work("Bild wird lokal berechnet … (beim ersten Mal kann das einige Minuten dauern)", async () => {
       const path = await invoke("generate", { device: $("device").value, request });
       await showResult(path, seed);
-      status("Bild gespeichert.");
+      await refreshHistory();
+      status("Bild fertig. Mit „Speichern“ in den Bilder-Ordner kopieren.");
     });
   }
 
@@ -498,7 +678,7 @@ $("studio").onsubmit = (e) => {
   const [width, height] = $("video-size").value.split("x").map(Number);
   const video = {
     ...base, mode: "video", width, height,
-    negative: fam.negative ? ($("negative").value.trim() || WAN_NEGATIVE) : "",
+    negative: fam.negative ? negativeWithFilters($("negative").value.trim() || WAN_NEGATIVE, { allowNsfw, allowPeople }) : "",
     frames: Number($("frames").value), fps: Number($("fps").value) || fam.fps, flow_shift: fam.flow || 0,
     init_image: template,
   };
@@ -515,9 +695,10 @@ $("studio").onsubmit = (e) => {
     const keyMissing = missingParts(keyModel, keyParts);
     if (keyMissing.length) return status(`Für das Startbild-Modell fehlt noch: ${keyMissing.join(", ")}.`);
     keyframeRequest = {
-      mode: "image", model: keyModel.id, components: keyParts, prompt: $("prompt").value, negative: "",
+      mode: "image", model: keyModel.id, components: keyParts, prompt: $("prompt").value,
+      negative: keyFam.negative ? negativeWithFilters("", { allowNsfw, allowPeople }) : "",
       width, height, steps: keyFam.steps, cfg: keyFam.cfg, seed, sampler: keyFam.sampler, offload: keyFam.offload,
-      init_image: null, refs: template ? [template] : [], faces: faceIds,
+      init_image: null, refs: template ? [template] : [], faces: faceIds, ...flags,
     };
   }
   work(keyframeRequest ? "Schritt 1 von 2: Startbild mit Gesichtern wird berechnet …" : "Video wird lokal berechnet … (das kann mehrere Minuten dauern)", async () => {
@@ -529,12 +710,14 @@ $("studio").onsubmit = (e) => {
     }
     const path = await invoke("generate", { device: $("device").value, request: video });
     await showResult(path, seed);
-    status("Video gespeichert.");
+    await refreshHistory();
+    status("Video fertig. Mit „Speichern“ in den Filme-Ordner kopieren.");
   });
 };
 
 async function refresh(selected) {
   entries = await invoke("library");
+  $("setup").hidden = mainModels().length > 0;
   renderLibrary();
   renderGenerator(selected);
 }

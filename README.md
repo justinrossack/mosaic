@@ -21,11 +21,30 @@ Oben gibt es zwei Bereiche: **Bild erstellen** und **Video erstellen**. Beide ha
 
 Insgesamt sind bis zu 10 Referenzbilder möglich (Vorlage + bis zu 3 Fotos pro Person).
 
+## Einstellungen beim Erstellen
+
+- **Qualität:** Entwurf (schnell), Standard, Hoch (langsam) – passt Schritte und Bildgröße an das Modell an.
+- **VAE / Text-Encoder verwenden:** schaltet optionales Zubehör ab. Zubehör, das ein Modell zwingend braucht (z. B. bei FLUX.3 Klein oder Wan), wird immer verwendet.
+- **Menschen generieren:** aus = Prompts mit Personen werden abgelehnt, Gesichter sind gesperrt.
+- **NSFW erlauben:** standardmäßig aus. Mit Gesichtern oder Vorlagen bleibt NSFW immer gesperrt, damit keine sexuellen Bilder echter Personen entstehen. Inhalte mit Minderjährigen in sexuellem Kontext sind immer gesperrt.
+
+## Speichern, Verlauf, Fehlerbericht
+
+- **Speichern:** kopiert das Ergebnis in den Bilder- bzw. Filme-Ordner (Unterordner „Mosaic“). „Im Ordner zeigen“ öffnet Finder/Explorer.
+- **Verlauf:** Jede Erstellung wird automatisch mit Prompt, Modell, Seed und Einstellungen gespeichert (`history.jsonl` im App-Datenordner). Prompts lassen sich mit einem Klick wiederverwenden.
+- **Fehler melden:** erstellt eine Textdatei mit Version, System, Modellliste und dem Protokoll des letzten Engine-Laufs. Fotos und Bilder sind nicht enthalten.
+
+## Whitelist
+
+„Nur freigegebene Modelle verwenden“ beschränkt die Erstellung auf Modelle, die in der Bibliothek als „frei“ markiert sind. Dateien aus den Ein-Klick-Paketen sind automatisch freigegeben.
+
 ## Gesichter-Datenbank
 
-Im Bereich **Gesichter** Personen mit Namen anlegen und eigene Fotos hochladen (PNG, JPG, WebP; am besten 1–3 gut beleuchtete Porträts). Die Fotos liegen nur im lokalen App-Datenordner und lassen sich einzeln oder samt Person löschen.
+Im Bereich **Gesichter** Personen mit Namen anlegen (mit Bestätigung, dass die Person eingewilligt hat oder es die eigene Person ist) und eigene Fotos hochladen (PNG, JPG, WebP; am besten 1–3 gut beleuchtete Porträts). Die Fotos liegen nur im lokalen App-Datenordner und lassen sich einzeln oder samt Person löschen.
 
 ## Modelle
+
+**Ersteinrichtung:** Beim ersten Start ohne Modelle bietet Mosaic „Alles laden (Bild + Video, ca. 14 GB)“ an – passend für Intel Core Ultra mit Arc-Grafik (empfohlen 32 GB RAM) und Apple Silicon.
 
 **Ein Klick:**
 
@@ -53,9 +72,11 @@ Node 22, Rust, CMake, Git, Python 3 und die nativen Tauri-Buildwerkzeuge install
     python scripts/engine.py
     npm run tauri dev
 
+Unter Windows erledigt `build-windows.bat` die Schritte bis zum fertigen Installer (Node.js, Rust, CMake, Python und Vulkan SDK müssen installiert sein).
+
 ## Release
 
 Ein Versions-Tag startet den Workflow `.github/workflows/release.yml`. Er baut den Windows-Installer und das macOS-Disk-Image auf nativen Runnern und legt beide im selben GitHub-Release ab:
 
-    git tag v0.3.0
-    git push origin v0.3.0
+    git tag v0.4.0
+    git push origin v0.4.0

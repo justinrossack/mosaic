@@ -35,6 +35,52 @@ const ROLES: [(&str, &str); 9] = [
 ];
 const EXTENSIONS: [&str; 4] = ["safetensors", "gguf", "ckpt", "sft"];
 
+const NSFW_TERMS: &[&str] = &[
+    "nsfw", "porno", "porn", "pornografie", "pornography", "xxx", "nude", "nudes", "naked", "nackt",
+    "erotic", "erotik", "erotisch", "sex", "sexual", "sexuell", "hentai", "explicit", "topless",
+    "oben ohne", "genitals", "genitalien", "penis", "vagina", "vulva", "boobs", "tits", "breasts",
+    "brüste", "nipples", "nippel", "fetish", "fetisch", "bdsm", "hardcore", "softcore", "uncensored",
+    "unzensiert", "blowjob", "handjob", "intercourse", "geschlechtsverkehr", "strip", "striptease",
+    "lingerie", "unterwäsche", "bikini", "cum", "orgasm", "orgasmus", "anal", "lesbian", "gay sex",
+];
+
+const PEOPLE_TERMS: &[&str] = &[
+    "mensch", "menschen", "person", "personen", "mann", "männer", "frau", "frauen", "kind", "kinder",
+    "mädchen", "junge", "jungen", "baby", "babys", "kleinkind", "porträt", "portrait", "gesicht",
+    "gesichter", "selfie", "model", "schauspieler", "schauspielerin", "human", "humans", "people",
+    "man", "men", "woman", "women", "girl", "girls", "boy", "boys", "child", "children", "face",
+    "faces", "lady", "gentleman", "couple", "paar", "crowd", "menschenmenge", "passant", "passanten",
+    "fußgänger", "pedestrian", "pedestrians", "figure", "figur", "körper", "body",
+];
+
+const MINOR_TERMS: &[&str] = &[
+    "kind", "kinder", "mädchen", "junge", "jungen", "baby", "babys", "kleinkind", "minderjährig",
+    "minderjährige", "child", "children", "girl", "girls", "boy", "boys", "kid", "kids", "minor",
+    "minors", "underage", "teen", "teenager", "toddler", "infant", "loli", "shota",
+];
+
+fn normalize_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push(' ');
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    if !out.ends_with(' ') {
+        out.push(' ');
+    }
+    out
+}
+
+fn has_term(normalized: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|t| normalized.contains(&format!(" {t} ")))
+}
+
 /// Eine Modelldatei in der Bibliothek: heruntergeladen (managed) oder importiert (Verweis).
 #[derive(Serialize, Deserialize, Clone)]
 struct Entry {
@@ -45,6 +91,9 @@ struct Entry {
     path: String,
     managed: bool,
     size: u64,
+    /// Freigabe für den Whitelist-Modus.
+    #[serde(default)]
+    approved: bool,
 }
 
 fn library_file(app: &tauri::AppHandle) -> Result<PathBuf> {
@@ -108,6 +157,7 @@ fn new_entry(path: &Path, name: &str, role: &str, family: &str, managed: bool) -
         path: path_text,
         managed,
         size: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        approved: false,
     }
 }
 
@@ -123,10 +173,48 @@ fn check_kind(role: &str, family: &str) -> Result<()> {
 
 fn upsert(app: &tauri::AppHandle, entry: Entry) -> Result<Entry> {
     let mut entries = load_library(app)?;
+    let mut entry = entry;
+    if let Some(old) = entries.iter().find(|e| e.path == entry.path) {
+        entry.approved = old.approved;
+    }
     entries.retain(|e| e.path != entry.path);
     entries.push(entry.clone());
     save_library(app, &entries)?;
     Ok(entry)
+}
+
+/// Dauerhafte App-Einstellungen (settings.json im Datenordner).
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct Settings {
+    /// Nur freigegebene Modelle (Whitelist) verwenden.
+    #[serde(default)]
+    whitelist_only: bool,
+}
+
+fn load_settings(app: &tauri::AppHandle) -> Result<Settings> {
+    match fs::read_to_string(folder(app, "")?.join("settings.json")) {
+        Ok(text) => Ok(serde_json::from_str(&text).unwrap_or_default()),
+        Err(_) => Ok(Settings::default()),
+    }
+}
+
+#[tauri::command]
+fn get_settings(app: tauri::AppHandle) -> Result<Settings> {
+    load_settings(&app)
+}
+
+#[tauri::command]
+fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<()> {
+    let file = folder(&app, "")?.join("settings.json");
+    fs::write(file, serde_json::to_vec_pretty(&settings).map_err(error)?).map_err(error)
+}
+
+#[tauri::command]
+fn approve_entry(app: tauri::AppHandle, id: String, approved: bool) -> Result<()> {
+    let mut entries = load_library(&app)?;
+    let entry = entries.iter_mut().find(|e| e.id == id).ok_or("Modell nicht gefunden.")?;
+    entry.approved = approved;
+    save_library(&app, &entries)
 }
 
 #[tauri::command]
@@ -306,6 +394,9 @@ fn default_frames() -> u32 {
 fn default_fps() -> u32 {
     24
 }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Deserialize)]
 struct GenerateRequest {
@@ -322,6 +413,10 @@ struct GenerateRequest {
     seed: i64,
     sampler: String,
     offload: bool,
+    #[serde(default)]
+    allow_nsfw: bool,
+    #[serde(default = "default_true")]
+    allow_people: bool,
     /// Vorlage als Ausgangsbild (img2img) bzw. Startbild eines Videos.
     #[serde(default)]
     init_image: Option<String>,
@@ -368,6 +463,32 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
     if r.prompt.trim().is_empty() || r.prompt.len() > 8000 || r.negative.len() > 8000 {
         return Err("Bitte einen Prompt mit höchstens 8000 Bytes eingeben.".into());
     }
+
+    // Inhaltsprüfung für NSFW/Porno und Menschen
+    let norm_prompt = normalize_words(&r.prompt);
+    let prompt_has_nsfw = has_term(&norm_prompt, NSFW_TERMS);
+    let prompt_has_minor = has_term(&norm_prompt, MINOR_TERMS);
+    if prompt_has_nsfw && prompt_has_minor {
+        return Err("Darstellungen von Minderjährigen in NSFW-Kontexten sind grundsätzlich unzulässig.".into());
+    }
+    // Mit Gesichtsfotos oder Vorlagen (z. B. Fotos echter Personen) bleibt NSFW immer gesperrt.
+    let uses_real_images = !r.faces.is_empty() || !r.refs.is_empty() || r.init_image.as_deref().is_some_and(|p| !p.is_empty());
+    let allow_nsfw = r.allow_nsfw && !uses_real_images;
+    if prompt_has_nsfw && uses_real_images {
+        return Err("NSFW ist mit Gesichtern oder Vorlagen grundsätzlich gesperrt, damit keine sexuellen Bilder echter Personen entstehen.".into());
+    }
+    if !allow_nsfw && prompt_has_nsfw {
+        return Err("NSFW / Porno ist ausgeschaltet. Bitte den Schalter „NSFW & Porno erlauben“ aktivieren oder den Prompt anpassen.".into());
+    }
+    if !r.allow_people {
+        if !r.faces.is_empty() {
+            return Err("„Menschen generieren“ ist ausgeschaltet. Bitte zuerst aktivieren oder ausgewählte Gesichter abwählen.".into());
+        }
+        if has_term(&norm_prompt, PEOPLE_TERMS) {
+            return Err("„Menschen generieren“ ist ausgeschaltet, aber der Prompt beschreibt Personen. Bitte aktivieren oder den Prompt anpassen.".into());
+        }
+    }
+
     let sizes_ok = |v: u32| (256..=2048).contains(&v) && v % 16 == 0;
     if !sizes_ok(r.width) || !sizes_ok(r.height) || !(1..=150).contains(&r.steps) || !(0.0..=30.0).contains(&r.cfg) {
         return Err("Ungültige Einstellungen für Größe, Schritte oder CFG.".into());
@@ -382,8 +503,12 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
         return Err("Unbekanntes Sampling-Verfahren.".into());
     }
     let entries = load_library(&app)?;
+    let whitelist_only = load_settings(&app)?.whitelist_only;
     let find = |id: &str| -> Result<&Entry> {
         let entry = entries.iter().find(|e| e.id == id).ok_or("Modell nicht gefunden. Bitte erneut auswählen.")?;
+        if whitelist_only && !entry.approved {
+            return Err(format!("„{}“ ist nicht in der Whitelist freigegeben. In der Bibliothek freigeben oder den Whitelist-Modus ausschalten.", entry.name));
+        }
         if !Path::new(&entry.path).is_file() {
             return Err(format!("Datei fehlt: {}. Wurde sie verschoben oder gelöscht?", entry.path));
         }
@@ -422,16 +547,21 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
     for path in &r.refs {
         refs.push(inside_data(&app, path)?);
     }
+    let mut face_names: Vec<String> = Vec::new();
     if !r.faces.is_empty() {
         let faces = load_faces(&app)?;
         let dir = folder(&app, "faces")?;
         for id in &r.faces {
             let face = faces.iter().find(|f| &f.id == id).ok_or("Person nicht gefunden.")?;
+            if !face.consent {
+                return Err(format!("Für „{}“ fehlt die Bestätigung der Einwilligung. Bitte im Bereich „Gesichter“ bestätigen.", face.name));
+            }
             if face.images.is_empty() {
                 return Err(format!("Für „{}“ gibt es noch keine Fotos.", face.name));
             }
             // Bis zu drei Fotos pro Person reichen für die Identität.
             refs.extend(face.images.iter().take(3).map(|img| dir.join(img)));
+            face_names.push(face.name.clone());
         }
     }
     if refs.len() > MAX_REFS {
@@ -465,16 +595,71 @@ async fn generate(app: tauri::AppHandle, device: String, request: GenerateReques
     if r.flow_shift > 0.0 {
         args.extend(["--flow-shift".into(), r.flow_shift.to_string()]);
     }
+    let mut neg_parts: Vec<String> = Vec::new();
     if !r.negative.trim().is_empty() {
-        args.extend(["-n".into(), r.negative.clone()]);
+        neg_parts.push(r.negative.trim().to_string());
+    }
+    if !allow_nsfw {
+        neg_parts.push("nsfw, nude, naked, porn, explicit, erotic, sexual, topless".into());
+    }
+    if !r.allow_people {
+        neg_parts.push("person, people, human, man, woman, face, portrait, crowd, pedestrian".into());
+    }
+    let effective_negative = neg_parts.join(", ");
+    if !effective_negative.is_empty() {
+        args.extend(["-n".into(), effective_negative]);
     }
     if r.offload {
         args.push("--offload-to-cpu".into());
     }
-    run_engine(&app, args, out).await
+    let model_name = main.name.clone();
+    let result = run_engine(&app, args, out).await?;
+    let _ = append_history(&app, serde_json::json!({
+        "time": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "mode": if video { "video" } else { "image" },
+        "prompt": r.prompt,
+        "negative": r.negative,
+        "model": model_name,
+        "faces": face_names,
+        "width": r.width,
+        "height": r.height,
+        "steps": r.steps,
+        "cfg": r.cfg,
+        "seed": r.seed,
+        "output": result,
+    }));
+    Ok(result)
+}
+
+// ---------- Verlauf ----------
+
+fn append_history(app: &tauri::AppHandle, item: serde_json::Value) -> Result<()> {
+    let file = folder(app, "")?.join("history.jsonl");
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(file).map_err(error)?;
+    writeln!(f, "{item}").map_err(error)
+}
+
+/// Die letzten Einträge des automatisch gespeicherten Verlaufs, neueste zuerst.
+#[tauri::command]
+fn history(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>> {
+    let text = fs::read_to_string(folder(&app, "")?.join("history.jsonl")).unwrap_or_default();
+    let mut items: Vec<serde_json::Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    items.reverse();
+    items.truncate(200);
+    Ok(items)
+}
+
+#[tauri::command]
+fn history_clear(app: tauri::AppHandle) -> Result<()> {
+    let file = folder(&app, "")?.join("history.jsonl");
+    if file.exists() {
+        fs::remove_file(file).map_err(error)?;
+    }
+    Ok(())
 }
 
 async fn run_engine(app: &tauri::AppHandle, args: Vec<String>, out: PathBuf) -> Result<String> {
+    let log_file = folder(app, "logs")?.join("last-run.log");
     let exe = app
         .path()
         .resource_dir()
@@ -503,6 +688,15 @@ async fn run_engine(app: &tauri::AppHandle, args: Vec<String>, out: PathBuf) -> 
             .arg(&out)
             .output()
             .map_err(|e| format!("Bild-Engine konnte nicht starten ({e})."))?;
+        // Protokoll des letzten Laufs für den Bug-Report.
+        let log = format!(
+            "Befehl: sd-cli {}\nStatus: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            args.join(" "),
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let _ = fs::write(&log_file, log);
         if !result.status.success() || !out.is_file() {
             let log = String::from_utf8_lossy(&result.stderr);
             let tail: Vec<_> = log.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
@@ -536,6 +730,9 @@ struct Face {
     id: String,
     name: String,
     images: Vec<String>,
+    /// Bestätigung: Die Person hat eingewilligt (oder es ist die eigene Person).
+    #[serde(default)]
+    consent: bool,
 }
 
 fn faces_file(app: &tauri::AppHandle) -> Result<PathBuf> {
@@ -571,16 +768,26 @@ fn faces_dir(app: tauri::AppHandle) -> Result<String> {
 }
 
 #[tauri::command]
-fn face_create(app: tauri::AppHandle, name: String) -> Result<Face> {
+fn face_create(app: tauri::AppHandle, name: String, consent: bool) -> Result<Face> {
+    if !consent {
+        return Err("Bitte bestätigen, dass die Person eingewilligt hat oder du es selbst bist.".into());
+    }
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 60 {
         return Err("Bitte einen Namen mit höchstens 60 Zeichen eingeben.".into());
     }
     let mut faces = load_faces(&app)?;
-    let face = Face { id: unique_id()?, name: name.to_string(), images: Vec::new() };
+    let face = Face { id: unique_id()?, name: name.to_string(), images: Vec::new(), consent: true };
     faces.push(face.clone());
     save_faces(&app, &faces)?;
     Ok(face)
+}
+
+#[tauri::command]
+fn face_confirm(app: tauri::AppHandle, id: String) -> Result<()> {
+    let mut faces = load_faces(&app)?;
+    faces.iter_mut().find(|f| f.id == id).ok_or("Person nicht gefunden.")?.consent = true;
+    save_faces(&app, &faces)
 }
 
 #[tauri::command]
@@ -659,12 +866,86 @@ fn import_template(app: tauri::AppHandle, path: String) -> Result<String> {
     Ok(dest.to_string_lossy().into_owned())
 }
 
+// ---------- Speichern, Ordner öffnen, Bug-Report ----------
+
+fn export_dir(app: &tauri::AppHandle, video: bool) -> Result<PathBuf> {
+    let base = if video { app.path().video_dir() } else { app.path().picture_dir() }
+        .or_else(|_| app.path().download_dir())
+        .map_err(error)?;
+    let dir = base.join("Mosaic");
+    fs::create_dir_all(&dir).map_err(error)?;
+    Ok(dir)
+}
+
+/// Kopiert ein Ergebnis in den Bilder- bzw. Filme-Ordner (Unterordner „Mosaic“).
+#[tauri::command]
+fn export_media(app: tauri::AppHandle, path: String) -> Result<String> {
+    let src = inside_data(&app, &path)?;
+    let video = src.extension().and_then(|e| e.to_str()) == Some("webm");
+    let name = src.file_name().ok_or("Ungültiger Dateiname.")?;
+    let dest = export_dir(&app, video)?.join(name);
+    fs::copy(&src, &dest).map_err(error)?;
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+/// Zeigt eine Datei aus den Mosaic-Daten oder den Export-Ordnern im Finder/Explorer.
+#[tauri::command]
+fn reveal(app: tauri::AppHandle, path: String) -> Result<()> {
+    let target = Path::new(&path).canonicalize().map_err(|_| "Datei nicht gefunden.".to_string())?;
+    let mut allowed = vec![folder(&app, "")?.canonicalize().map_err(error)?];
+    for video in [false, true] {
+        if let Ok(dir) = export_dir(&app, video).and_then(|d| d.canonicalize().map_err(error)) {
+            allowed.push(dir);
+        }
+    }
+    if !allowed.iter().any(|base| target.starts_with(base)) {
+        return Err("Dieser Ort kann nicht geöffnet werden.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg("-R").arg(&target).status();
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer").arg(format!("/select,{}", target.display())).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = Command::new("xdg-open").arg(target.parent().unwrap_or(&target)).status();
+    status.map(|_| ()).map_err(error)
+}
+
+/// Erstellt einen Fehlerbericht (Textdatei) mit Systeminfo, Modellen und Engine-Protokoll.
+#[tauri::command]
+fn bug_report(app: tauri::AppHandle, description: String) -> Result<String> {
+    let mut text = String::new();
+    text.push_str("Mosaic Fehlerbericht\n====================\n\n");
+    text.push_str(&format!("Version: {}\n", app.package_info().version));
+    text.push_str(&format!("System: {} {}\n", std::env::consts::OS, std::env::consts::ARCH));
+    text.push_str(&format!("Profil: {}\n", profile()));
+    text.push_str(&format!("Whitelist-Modus: {}\n\n", load_settings(&app)?.whitelist_only));
+    text.push_str(&format!("Beschreibung:\n{}\n\n", description.trim()));
+    text.push_str("Modelle:\n");
+    for e in load_library(&app)? {
+        text.push_str(&format!(
+            "- {} | {} | {} | {:.2} GB | {} | {}\n",
+            e.name, e.role, e.family, e.size as f64 / 1e9,
+            if Path::new(&e.path).is_file() { "vorhanden" } else { "FEHLT" },
+            if e.approved { "freigegeben" } else { "nicht freigegeben" }
+        ));
+    }
+    text.push_str(&format!("\nPersonen in der Gesichter-Datenbank: {}\n", load_faces(&app)?.len()));
+    let log = fs::read_to_string(folder(&app, "logs")?.join("last-run.log")).unwrap_or_else(|_| "(noch kein Lauf)".into());
+    let tail: String = log.chars().rev().take(20_000).collect::<Vec<_>>().into_iter().rev().collect();
+    text.push_str("\nLetzter Engine-Lauf:\n");
+    text.push_str(&tail);
+    let path = folder(&app, "reports")?.join(format!("mosaic-fehlerbericht-{}.txt", unique_id()?));
+    fs::write(&path, text).map_err(error)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(false))
         .invoke_handler(tauri::generate_handler![
             profile, library, import_file, update_entry, remove_entry, download, generate, media,
-            faces, faces_dir, face_create, face_delete, face_remove_image, upload, import_template
+            faces, faces_dir, face_create, face_confirm, face_delete, face_remove_image, upload, import_template,
+            get_settings, set_settings, approve_entry, history, history_clear, export_media, reveal, bug_report
         ])
         .run(tauri::generate_context!())
         .expect("Mosaic konnte nicht starten");
